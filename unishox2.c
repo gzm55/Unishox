@@ -74,6 +74,9 @@ const int UTF8_PREFIX[] = {0xC0, 0xE0, 0xF0};
 
 #define SW_CODE 0
 #define SW_CODE_LEN 2
+#define TERM_BYTE_PRESET_1 0
+#define TERM_BYTE_PRESET_1_LEN_LOWER 6
+#define TERM_BYTE_PRESET_1_LEN_UPPER 4
 
 #define USX_OFFSET_94 33
 
@@ -391,14 +394,19 @@ long min_of(long c, long i) {
   return c > i ? i : c;
 }
 
-void append_final_bits(char *out, int ol, const byte bits[], const int bit_lens[]) {
+int append_final_bits(char *out, int ol, byte need_full_term_codes, const byte bits[], const int bit_lens[]) {
   char remain_bits = 8 - (ol % 8);
   for (int i = 0; i < 4; i++) {
-    if (bit_lens[i] && remain_bits > 0) {
+    if (bit_lens[i]) {
       ol = append_bits(out, (ol+7) / 8, ol, bits[i], min_of(remain_bits, bit_lens[i]));
       remain_bits -= bit_lens[i];
+      if (!need_full_term_codes) {
+        if (remain_bits <= 0)
+          break;
+      }
     }
   }
+  return ol;
 }
 
 #define SAFE_APPEND_BITS2(olen, exp) do { \
@@ -414,8 +422,14 @@ int unishox2_compress_lines(const char *in, int len, UNISHOX_API_OUT_AND_LEN(cha
   char c_in, c_next;
   int prev_uni;
   byte is_upper, is_all_upper;
+  byte need_full_term_codes = 0;
 #if (UNISHOX_API_OUT_AND_LEN(0,1)) == 0
   const int olen = INT_MAX - 1;
+#else
+  if (olen < 0) {
+    need_full_term_codes = 1;
+    olen *= -1;
+  }
 #endif
 
   init_coder();
@@ -719,11 +733,17 @@ int unishox2_compress_lines(const char *in, int len, UNISHOX_API_OUT_AND_LEN(cha
   }
   int ret = ol/8+(ol%8?1:0);
   if (ol % 8) {
-    append_final_bits(out, ol, (byte[]) {UNI_STATE_SPL_CODE,
-      state == USX_DELTA ? UNI_STATE_SW_CODE : SW_CODE, usx_hcodes[USX_NUM],
-      usx_vcodes[TERM_CODE & 0x1F]}, (int[]) {state == USX_DELTA ? UNI_STATE_SPL_CODE_LEN : 0, 
-      state == USX_DELTA ? UNI_STATE_SW_CODE_LEN : SW_CODE_LEN, usx_hcode_lens[USX_NUM], 8});
+    ol = append_final_bits(out, ol, need_full_term_codes,
+      (byte[]) {UNI_STATE_SPL_CODE, // 1
+      state == USX_DELTA ? UNI_STATE_SW_CODE : SW_CODE, // 2
+      usx_hcode_lens[USX_ALPHA] ? usx_hcodes[USX_NUM] : TERM_BYTE_PRESET_1, // 3
+      usx_vcodes[TERM_CODE & 0x1F]}, // 4
+      (int[]) {state == USX_DELTA ? UNI_STATE_SPL_CODE_LEN : 0, // 1
+      state == USX_DELTA ? UNI_STATE_SW_CODE_LEN : SW_CODE_LEN, // 2
+      usx_hcode_lens[USX_ALPHA] ? usx_hcode_lens[USX_NUM] : (is_all_upper ? TERM_BYTE_PRESET_1_LEN_UPPER : TERM_BYTE_PRESET_1_LEN_LOWER), // 3
+      usx_hcode_lens[USX_ALPHA] ? 8 : 0}); // 4
   }
+  ret = ol/8+(ol%8?1:0);
   //printf("\n%ld\n", ol);
   return ret;
 
